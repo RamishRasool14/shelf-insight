@@ -472,7 +472,7 @@ def display_detection_results(results):
             })
         
         df = pd.DataFrame(items_data)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df)
         
         # Individual item cards
         st.subheader("🔍 Item Details")
@@ -579,7 +579,7 @@ def main():
             if is_valid:
                 # Display uploaded image
                 image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", use_container_width=True)
+                st.image(image, caption="Uploaded Image", width=600)
                 st.session_state.uploaded_image = image
                 
                 # Analyze button
