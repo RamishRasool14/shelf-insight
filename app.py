@@ -4,10 +4,12 @@ Product Shelf Analysis Tool - Streamlit Application
 
 import streamlit as st
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from PIL import Image
 import pandas as pd
 from io import BytesIO
+import requests
+import base64
 
 from config import (
     APP_TITLE, 
@@ -18,6 +20,287 @@ from config import (
     ALLOWED_EXTENSIONS
 )
 from gemini_client import GeminiProductDetector, create_sample_detection_result
+
+# API Configuration
+OSA_API_URL = "https://tamimi.impulseglobal.net//ExternalServices/IR_API.asmx/getOSAImage"
+DISPLAY_IDS = ['ACH187', 'ACH190', 'ACH186', 'ACH191', 'ACH192', 'ACH189', 'ACH188']
+
+
+def get_last_10_days():
+    """Get list of last 10 days for date selection"""
+    dates = []
+    for i in range(10):
+        date = datetime.now() - timedelta(days=i)
+        dates.append({
+            'date': date.strftime('%Y-%m-%d'),
+            'display': date.strftime('%Y-%m-%d (%A)')
+        })
+    return dates
+
+
+def fetch_osa_images(date, display_id):
+    """Fetch OSA images from the API"""
+    try:
+        # Format date for API (using the date parameter format expected by API)
+        formatted_date = date  # API expects YYYY-MM-DD format
+        
+        params = {
+            'Date': formatted_date,
+            'DisplayID': display_id
+        }
+        
+        response = requests.get(OSA_API_URL, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        return data, None
+        
+    except requests.RequestException as e:
+        return None, f"API request failed: {str(e)}"
+    except json.JSONDecodeError as e:
+        return None, f"Failed to parse API response: {str(e)}"
+    except Exception as e:
+        return None, f"Unexpected error: {str(e)}"
+
+
+def get_unique_skus_from_api_data(api_data):
+    """Extract unique SKUs from API response data"""
+    if not api_data:
+        return []
+    
+    unique_skus = set()
+    for item in api_data:
+        if 'SKU' in item and item['SKU']:
+            unique_skus.add(item['SKU'])
+    
+    return sorted(list(unique_skus))
+
+
+def get_ground_truth_skus(api_data):
+    """Extract ground truth SKUs (OSA=1) from API response data"""
+    if not api_data:
+        return []
+    
+    ground_truth_skus = set()
+    for item in api_data:
+        if 'SKU' in item and item['SKU'] and item.get('OSA') == 1:
+            ground_truth_skus.add(item['SKU'])
+    
+    return sorted(list(ground_truth_skus))
+
+
+def get_predicted_skus_from_results(detection_results):
+    """Extract predicted SKUs from Gemini detection results"""
+    if not detection_results or 'detected_items' not in detection_results:
+        return []
+    
+    predicted_skus = set()
+    for item in detection_results['detected_items']:
+        if 'item_name' in item and item['item_name']:
+            predicted_skus.add(item['item_name'])
+    
+    return sorted(list(predicted_skus))
+
+
+def calculate_accuracy_metrics(ground_truth_skus, predicted_skus):
+    """Calculate accuracy metrics comparing ground truth with predictions"""
+    if not ground_truth_skus:
+        return {
+            'accuracy': 0,
+            'total_ground_truth': 0,
+            'total_predicted': len(predicted_skus),
+            'correctly_detected': [],
+            'missed_skus': [],
+            'false_positives': predicted_skus.copy()
+        }
+    
+    ground_truth_set = set(ground_truth_skus)
+    predicted_set = set(predicted_skus)
+    
+    # Correctly detected SKUs (intersection)
+    correctly_detected = list(ground_truth_set.intersection(predicted_set))
+    
+    # Missed SKUs (in ground truth but not predicted)
+    missed_skus = list(ground_truth_set - predicted_set)
+    
+    # False positives (predicted but not in ground truth)
+    false_positives = list(predicted_set - ground_truth_set)
+    
+    # Calculate accuracy
+    accuracy = len(correctly_detected) / len(ground_truth_skus) if ground_truth_skus else 0
+    
+    return {
+        'accuracy': accuracy,
+        'total_ground_truth': len(ground_truth_skus),
+        'total_predicted': len(predicted_skus),
+        'correctly_detected': sorted(correctly_detected),
+        'missed_skus': sorted(missed_skus),
+        'false_positives': sorted(false_positives)
+    }
+
+
+def display_accuracy_metrics(metrics):
+    """Display accuracy metrics with dropdowns for detailed view"""
+    st.subheader("📊 Accuracy Metrics")
+    
+    # Main metrics display
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        accuracy_percent = metrics['accuracy'] * 100
+        st.metric(
+            label="Accuracy", 
+            value=f"{accuracy_percent:.1f}%",
+            help="Percentage of ground truth SKUs correctly detected"
+        )
+    
+    with col2:
+        st.metric(
+            label="Ground Truth SKUs", 
+            value=metrics['total_ground_truth'],
+            help="Total SKUs with OSA=1 in the display"
+        )
+    
+    with col3:
+        st.metric(
+            label="Predicted SKUs", 
+            value=metrics['total_predicted'],
+            help="Total SKUs detected by AI"
+        )
+    
+    with col4:
+        st.metric(
+            label="Correctly Detected", 
+            value=len(metrics['correctly_detected']),
+            help="SKUs present in both ground truth and predictions"
+        )
+    
+    # Detailed breakdowns with dropdowns
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.write("**✅ Correctly Detected SKUs**")
+        if metrics['correctly_detected']:
+            with st.expander(f"View {len(metrics['correctly_detected'])} correctly detected SKUs"):
+                for i, sku in enumerate(metrics['correctly_detected'], 1):
+                    st.write(f"{i}. {sku}")
+        else:
+            st.info("No SKUs correctly detected")
+    
+    with col2:
+        st.write("**❌ Missed SKUs (False Negatives)**")
+        if metrics['missed_skus']:
+            with st.expander(f"View {len(metrics['missed_skus'])} missed SKUs"):
+                for i, sku in enumerate(metrics['missed_skus'], 1):
+                    st.write(f"{i}. {sku}")
+        else:
+            st.success("No SKUs missed")
+    
+    with col3:
+        st.write("**⚠️ False Positives**")
+        if metrics['false_positives']:
+            with st.expander(f"View {len(metrics['false_positives'])} false positives"):
+                for i, sku in enumerate(metrics['false_positives'], 1):
+                    st.write(f"{i}. {sku}")
+        else:
+            st.success("No false positives")
+
+
+def display_osa_images(api_data):
+    """Display OSA images with SKU image buttons"""
+    if not api_data:
+        st.info("No data available for selected date and display ID.")
+        return
+    
+    # Group by unique after images
+    image_groups = {}
+    for item in api_data:
+        after_image = item.get('AfterImagePath', '')
+        if after_image:
+            if after_image not in image_groups:
+                image_groups[after_image] = []
+            image_groups[after_image].append(item)
+    
+    if not image_groups:
+        st.info("No display images found for selected date and display ID.")
+        return
+    
+    st.subheader(f"📸 Display Images ({len(image_groups)} images found)")
+    
+    for i, (after_image_url, items) in enumerate(image_groups.items()):
+        with st.expander(f"Display Image {i+1} - {len(items)} SKUs", expanded=True):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                try:
+                    st.image(after_image_url, caption=f"Display Image {i+1}", use_container_width=True)
+                except Exception as e:
+                    st.error(f"Failed to load image: {str(e)}")
+                    st.text(f"Image URL: {after_image_url}")
+            
+            with col2:
+                st.write(f"**SKUs in this display:** {len(items)}")
+                
+                # Create searchable dropdown for SKU selection
+                if items:
+                    # Prepare SKU options for dropdown
+                    sku_options = []
+                    sku_data = {}
+                    
+                    for j, item in enumerate(items):
+                        sku_name = item.get('SKU', f'Unknown SKU {j+1}')
+                        article = item.get('ArticleNo', 'N/A')
+                        upc = item.get('Upccode', 'N/A')
+                        osa = item.get('OSA', 'N/A')
+                        
+                        # Create display text for dropdown
+                        display_text = f"{sku_name} (Article: {article})"
+                        sku_options.append(display_text)
+                        
+                        # Store full item data
+                        sku_data[display_text] = {
+                            'item': item,
+                            'sku': sku_name,
+                            'article': article,
+                            'upc': upc,
+                            'osa': osa
+                        }
+                    
+                    # Searchable dropdown
+                    st.write("**🔍 Select SKU to view details:**")
+                    selected_sku = st.selectbox(
+                        "Choose a SKU:",
+                        options=["Select a SKU..."] + sku_options,
+                        key=f"sku_dropdown_{i}",
+                        help="Type to search or scroll to select a SKU"
+                    )
+                    
+                    # Display selected SKU details and image
+                    if selected_sku and selected_sku != "Select a SKU...":
+                        selected_data = sku_data[selected_sku]
+                        
+                        st.write("---")
+                        st.write(f"**📦 {selected_data['sku']}**")
+                        st.write(f"- **Article:** {selected_data['article']}")
+                        st.write(f"- **UPC:** {selected_data['upc']}")
+                        st.write(f"- **OSA:** {selected_data['osa']}")
+                        
+                        # Display SKU image if available
+                        if selected_data['item'].get('SKUImage'):
+                            st.write("**🏷️ SKU Image:**")
+                            try:
+                                st.image(
+                                    selected_data['item']['SKUImage'], 
+                                    caption=f"SKU Image: {selected_data['sku']}", 
+                                    width=300
+                                )
+                            except Exception as e:
+                                st.error(f"Failed to load SKU image: {str(e)}")
+                                st.text(f"Image URL: {selected_data['item']['SKUImage']}")
+                        else:
+                            st.info("No image available for this SKU")
+                else:
+                    st.info("No SKU items found in this display")
 
 
 def setup_page_config():
@@ -503,122 +786,171 @@ def main():
         st.session_state.detection_results = None
     if 'uploaded_image' not in st.session_state:
         st.session_state.uploaded_image = None
+    if 'osa_data' not in st.session_state:
+        st.session_state.osa_data = None
+    if 'selected_date' not in st.session_state:
+        st.session_state.selected_date = None
+    if 'selected_display_id' not in st.session_state:
+        st.session_state.selected_display_id = None
     
     # Initialize SKU management session state
     initialize_sku_session_state()
     
-    # Sidebar for configuration
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # SKU Items Configuration with Management
-        sku_mode = st.radio(
-            "📦 SKU Configuration Mode:",
-            ["🎯 Quick Detection", "⚙️ Manage SKU Items"],
-            help="Quick Detection: Use current list for detection\nManage SKU Items: Add, edit, delete SKU items"
-        )
-        
-        if sku_mode == "🎯 Quick Detection":
-            # Quick detection mode - show current list and allow usage
-            st.write(f"**Current SKU Items:** {len(st.session_state.custom_sku_items)} items")
-            
-            # Quick preview of items
-            with st.expander("📋 View Current SKU Items"):
-                if st.session_state.custom_sku_items:
-                    # Show first 10 items and count
-                    display_items = st.session_state.custom_sku_items[:10]
-                    for i, item in enumerate(display_items, 1):
-                        st.write(f"{i}. {item}")
-                    
-                    if len(st.session_state.custom_sku_items) > 10:
-                        st.write(f"... and {len(st.session_state.custom_sku_items) - 10} more items")
-                else:
-                    st.info("No SKU items configured. Switch to 'Manage SKU Items' to add some!")
-            
-            # Use session state SKU items for detection
-            sku_items = st.session_state.custom_sku_items.copy()
-            
-            # Quick actions
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("📥 Load Default"):
-                    st.session_state.custom_sku_items = DEFAULT_SKU_ITEMS.copy()
-                    st.success("Loaded default SKU items!")
-                    st.rerun()
-            with col2:
-                if st.button("🔄 Refresh"):
-                    st.rerun()
-        
-        else:
-            # Management mode - full SKU management interface
-            render_sku_management()
-            sku_items = st.session_state.custom_sku_items.copy()
-        
-        # Additional options
-        st.subheader("🔧 Detection Options")
-        demo_mode = st.checkbox("Demo Mode (Use Sample Results)", value=False, 
-                               help="Use sample detection results for testing")
+    # OSA Image Analysis Interface
+    st.subheader("📅 Select Date and Display ID")
     
-    # Main content area
-    col1, col2 = st.columns([1, 1])
+    # Date and Display ID selection
+    col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-        st.subheader("📸 Upload Product Shelf Image")
+        dates = get_last_10_days()
+        date_options = [d['display'] for d in dates]
+        date_values = [d['date'] for d in dates]
         
-        uploaded_file = st.file_uploader(
-            "Choose an image file",
-            type=ALLOWED_EXTENSIONS,
-            help=f"Maximum file size: {MAX_FILE_SIZE_MB}MB. Supported formats: {', '.join(ALLOWED_EXTENSIONS)}"
+        selected_date_index = st.selectbox(
+            "Select Date:",
+            range(len(date_options)),
+            format_func=lambda x: date_options[x],
+            help="Select a date from the last 10 days"
         )
-        
-        if uploaded_file is not None:
-            # Validate file
-            is_valid, message = validate_uploaded_file(uploaded_file)
-            
-            if is_valid:
-                # Display uploaded image
-                image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Image", width=600)
-                st.session_state.uploaded_image = image
-                
-                # Analyze button
-                if st.button("🔍 Analyze Product Shelf", type="primary", use_container_width=True):
-                    with st.spinner("Analyzing image... This may take a few moments."):
-                        if demo_mode:
-                            # Use sample results for demo
-                            st.session_state.detection_results = create_sample_detection_result()
-                            st.success("✅ Analysis complete (Demo Mode)")
-                        else:
-                            try:
-                                detector = GeminiProductDetector()
-                                results = detector.detect_products(image, sku_items)
-                                st.session_state.detection_results = results
-                                st.success("✅ Analysis complete!")
-                            except Exception as e:
-                                st.error(f"❌ Analysis failed: {str(e)}")
-            else:
-                st.error(f"❌ {message}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+        selected_date = date_values[selected_date_index]
     
     with col2:
-        if st.session_state.detection_results:
-            st.markdown('<div class="results-section">', unsafe_allow_html=True)
-            st.subheader("📊 Detection Results")
+        selected_display_id = st.selectbox(
+            "Select Display ID:",
+            DISPLAY_IDS,
+            help="Select a display ID to view images from"
+        )
+    
+    with col3:
+        st.write("")  # Spacer
+        st.write("")  # Spacer
+        if st.button("🔍 Fetch Images", type="primary"):
+            with st.spinner("Fetching images from API..."):
+                data, error = fetch_osa_images(selected_date, selected_display_id)
+                if error:
+                    st.error(f"❌ {error}")
+                    st.session_state.osa_data = None
+                else:
+                    st.session_state.osa_data = data
+                    st.session_state.selected_date = selected_date
+                    st.session_state.selected_display_id = selected_display_id
+                    st.success(f"✅ Found {len(data)} items for {selected_date} - {selected_display_id}")
+    
+    # Main analysis interface
+    if st.session_state.osa_data:
+        st.markdown("---")
+        
+        # Create two main columns: left for images and data, right for predictions
+        left_col, right_col = st.columns([3, 2])
+        
+        with left_col:
+            # Display OSA images
+            display_osa_images(st.session_state.osa_data)
             
-            # Display results
-            display_detection_results(st.session_state.detection_results)
+            # Ground truth and available SKUs section
+            st.markdown("---")
+            st.subheader("📋 SKU Information")
             
-            # Download button
-            if st.session_state.detection_results.get("detected_items"):
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"shelf_analysis_{timestamp}.json"
-                create_download_button(st.session_state.detection_results, filename)
+            # Get ground truth and all SKUs
+            ground_truth_skus = get_ground_truth_skus(st.session_state.osa_data)
+            all_skus = get_unique_skus_from_api_data(st.session_state.osa_data)
             
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("👆 Upload an image and click 'Analyze Product Shelf' to see results here.")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Ground Truth SKUs (OSA=1):**")
+                st.info(f"Total: {len(ground_truth_skus)} SKUs")
+                
+                if ground_truth_skus:
+                    with st.expander("📋 View Ground Truth SKUs"):
+                        for i, sku in enumerate(ground_truth_skus, 1):
+                            st.write(f"{i}. {sku}")
+                else:
+                    st.warning("No ground truth SKUs found (OSA=1)")
+            
+            with col2:
+                st.write("**All Available SKUs:**")
+                st.info(f"Total: {len(all_skus)} SKUs")
+                
+                if all_skus:
+                    with st.expander("📋 View All SKUs"):
+                        for i, sku in enumerate(all_skus, 1):
+                            osa_status = "✅" if sku in ground_truth_skus else "❌"
+                            st.write(f"{i}. {sku} {osa_status}")
+        
+        with right_col:
+            st.subheader("🤖 AI Prediction Analysis")
+            st.info("ℹ️ AI analysis uses only Ground Truth SKUs (OSA=1) for detection")
+            
+            # Analysis button
+            if st.button("🔍 Analyze Display Images", type="primary", use_container_width=True):
+                if ground_truth_skus:
+                    with st.spinner("Analyzing display images... This may take a few moments."):
+                        try:
+                            # Use the first display image for analysis
+                            image_groups = {}
+                            for item in st.session_state.osa_data:
+                                after_image = item.get('AfterImagePath', '')
+                                if after_image and after_image not in image_groups:
+                                    image_groups[after_image] = True
+                                    break
+                            
+                            if image_groups:
+                                # Get the first image URL
+                                first_image_url = list(image_groups.keys())[0]
+                                
+                                # Download and convert image for analysis
+                                response = requests.get(first_image_url)
+                                response.raise_for_status()
+                                image = Image.open(BytesIO(response.content))
+                                
+                                # Use only ground truth SKUs (OSA=1) for detection
+                                detector = GeminiProductDetector()
+                                results = detector.detect_products(image, ground_truth_skus)
+                                st.session_state.detection_results = results
+                                st.success("✅ Analysis complete!")
+                            else:
+                                st.error("No display images found to analyze")
+                        except Exception as e:
+                            st.error(f"❌ Analysis failed: {str(e)}")
+                else:
+                    st.warning("No ground truth SKUs found (OSA=1) to analyze")
+            
+            # Display prediction results and accuracy metrics
+            if st.session_state.detection_results:
+                st.markdown("---")
+                
+                # Get predictions and calculate accuracy
+                predicted_skus = get_predicted_skus_from_results(st.session_state.detection_results)
+                
+                if ground_truth_skus:
+                    # Calculate and display accuracy metrics
+                    metrics = calculate_accuracy_metrics(ground_truth_skus, predicted_skus)
+                    display_accuracy_metrics(metrics)
+                    
+                    st.markdown("---")
+                
+                # Display simplified prediction results
+                st.subheader("🔍 AI Predictions")
+                
+                if predicted_skus:
+                    st.write(f"**Detected {len(predicted_skus)} SKUs:**")
+                    
+                    # Color code predictions based on ground truth
+                    for i, sku in enumerate(predicted_skus, 1):
+                        if sku in ground_truth_skus:
+                            st.success(f"✅ {i}. {sku}")
+                        else:
+                            st.error(f"❌ {i}. {sku}")
+                else:
+                    st.info("No SKUs detected in the image")
+                
+                # Download button
+                if st.session_state.detection_results.get("detected_items"):
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"osa_analysis_{st.session_state.selected_date}_{st.session_state.selected_display_id}_{timestamp}.json"
+                    create_download_button(st.session_state.detection_results, filename)
     
     # Footer
     st.markdown("---")

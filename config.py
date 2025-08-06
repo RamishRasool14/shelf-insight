@@ -17,8 +17,8 @@ except (ImportError, KeyError, FileNotFoundError):
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # App Configuration
-APP_TITLE = "Product Shelf Analysis Tool"
-APP_DESCRIPTION = "Upload images of retail product displays and automatically detect SKU items using AI"
+APP_TITLE = "OSA Image Analysis Tool"
+APP_DESCRIPTION = "Analyze retail display images from OSA API and calculate accuracy metrics against ground truth data using AI"
 
 # UI Colors (Google Material Design)
 COLORS = {

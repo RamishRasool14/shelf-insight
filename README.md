@@ -1,15 +1,33 @@
-# Product Shelf Analysis Tool
+# OSA Image Analysis Tool
 
-A web-based application that uses Google's Gemini 2.5 Pro model to automatically detect and identify SKU items in retail product display images.
+A web-based application that analyzes retail display images from OSA API and calculates accuracy metrics against ground truth data using Google's Gemini 2.5 Pro AI model.
 
 ## 🚀 Features
 
-- **Image Upload Interface**: Drag-and-drop upload for product display rack photos
-- **SKU Configuration**: Customizable item detection lists with default retail items
-- **AI-Powered Detection**: Google Gemini 2.5 Pro integration for automated product identification
-- **JSON Export**: Download detection results in structured JSON format
-- **Clean UI**: Google Material Design inspired interface with mobile responsiveness
-- **Demo Mode**: Test the interface with sample detection results
+### Core Functionality
+- **Date Selection**: Choose from last 10 days for historical analysis
+- **Display ID Selection**: Select from configured display IDs (ACH187, ACH190, ACH186, ACH191, ACH192, ACH189, ACH188)
+- **API Integration**: Direct integration with Tamimi OSA API for real-time image data
+- **Filtered SKU Detection**: Uses only ground truth SKUs (OSA=1) for AI analysis
+- **Display Image Viewing**: View original display images (AfterImagePath) with SKU details
+- **SKU Image Access**: Click buttons to view individual SKU images when available
+
+### Accuracy Metrics & Analysis
+- **Ground Truth Extraction**: Automatically identifies SKUs with OSA=1 as ground truth
+- **AI Prediction Comparison**: Compares Gemini AI predictions with ground truth data
+- **Accuracy Calculation**: Calculates percentage of correctly detected SKUs
+- **Detailed Breakdowns**: 
+  - ✅ Correctly detected SKUs (True Positives)
+  - ❌ Missed SKUs (False Negatives) 
+  - ⚠️ False Positives (Predicted but not in ground truth)
+- **Interactive Dropdowns**: View detailed lists of each category
+- **Visual Indicators**: Color-coded predictions for easy comparison
+
+### User Experience
+- **Clean Layout**: Two-column design with images on left, predictions on right
+- **Real-time Analysis**: Instant accuracy metrics after AI analysis
+- **JSON Export**: Download detection results with accuracy data
+- **Responsive Design**: Google Material Design inspired interface
 
 ## 🛠️ Technology Stack
 
@@ -60,18 +78,32 @@ A web-based application that uses Google's Gemini 2.5 Pro model to automatically
 
 2. **Open your browser** and navigate to `http://localhost:8501`
 
-3. **Configure SKU items**:
-   - Use the default SKU list or create your custom list
-   - Add items you want to detect in product shelf images
+3. **Select Analysis Parameters**:
+   - Choose a date from the last 10 days using the dropdown
+   - Select a Display ID from the available options (ACH187, ACH190, etc.)
+   - Click "Fetch Images" to retrieve data from the OSA API
 
-4. **Upload and analyze**:
-   - Upload a product shelf image (PNG, JPG, JPEG, WebP)
-   - Click "Analyze Product Shelf" to start detection
-   - View results with item counts, locations, and confidence levels
+4. **Review Ground Truth Data**:
+   - View original display images (AfterImagePath) on the left side
+   - See SKU details for each display including Article numbers and UPC codes
+   - Review Ground Truth SKUs (OSA=1) and All Available SKUs
+   - Click "Show SKU Image" buttons to view individual product images
 
-5. **Export results**:
-   - Download detection results as JSON file
-   - Use data for inventory management or analytics
+5. **Run AI Analysis**:
+   - Click "Analyze Display Images" on the right panel
+   - AI processes the display image using only ground truth SKUs (OSA=1)
+   - View real-time accuracy metrics comparing predictions vs ground truth
+
+6. **Analyze Results**:
+   - **Accuracy Percentage**: Overall detection accuracy
+   - **Correctly Detected SKUs**: ✅ Green indicators for true positives
+   - **Missed SKUs**: ❌ Red indicators for false negatives
+   - **False Positives**: ⚠️ Items predicted but not in ground truth
+   - **Interactive Dropdowns**: Click to view detailed lists
+
+7. **Export Data**:
+   - Download detection results with accuracy metrics as JSON
+   - Use data for model performance analysis and improvement
 
 ## 📁 Project Structure
 
