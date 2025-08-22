@@ -102,6 +102,18 @@ def get_predicted_skus_from_results(detection_results):
     return sorted(list(predicted_skus))
 
 
+def get_sku_image_url(sku_name, api_data):
+    """Get the image URL for a specific SKU from API data"""
+    if not api_data or not sku_name:
+        return None
+    
+    for item in api_data:
+        if item.get('SKU') == sku_name and item.get('SKUImage'):
+            return item['SKUImage']
+    
+    return None
+
+
 def calculate_accuracy_metrics(ground_truth_skus, predicted_skus):
     """Calculate accuracy metrics comparing ground truth with predictions"""
     if not ground_truth_skus:
@@ -139,8 +151,8 @@ def calculate_accuracy_metrics(ground_truth_skus, predicted_skus):
     }
 
 
-def display_accuracy_metrics(metrics):
-    """Display accuracy metrics with dropdowns for detailed view"""
+def display_accuracy_metrics(metrics, api_data=None):
+    """Display accuracy metrics with dropdowns for detailed view and images"""
     st.subheader("📊 Accuracy Metrics")
     
     # Main metrics display
@@ -191,8 +203,27 @@ def display_accuracy_metrics(metrics):
         st.write("**❌ Missed SKUs (False Negatives)**")
         if metrics['missed_skus']:
             with st.expander(f"View {len(metrics['missed_skus'])} missed SKUs"):
-                for i, sku in enumerate(metrics['missed_skus'], 1):
-                    st.write(f"{i}. {sku}")
+                # Create scrollable container using Streamlit's container with height
+                with st.container(height=400):
+                    for i, sku in enumerate(metrics['missed_skus'], 1):
+                        st.write(f"{i}. **{sku}**")
+                        
+                        # Display SKU image if available
+                        if api_data:
+                            image_url = get_sku_image_url(sku, api_data)
+                            if image_url:
+                                try:
+                                    st.image(
+                                        image_url, 
+                                        caption=f"Missed SKU: {sku}", 
+                                        width=200
+                                    )
+                                except Exception as e:
+                                    st.error(f"Failed to load image for {sku}: {str(e)}")
+                                    st.text(f"Image URL: {image_url}")
+                            else:
+                                st.info(f"No image available for {sku}")
+                        st.write("---")  # Separator between SKUs
         else:
             st.success("No SKUs missed")
     
@@ -200,8 +231,27 @@ def display_accuracy_metrics(metrics):
         st.write("**⚠️ False Positives**")
         if metrics['false_positives']:
             with st.expander(f"View {len(metrics['false_positives'])} false positives"):
-                for i, sku in enumerate(metrics['false_positives'], 1):
-                    st.write(f"{i}. {sku}")
+                # Create scrollable container using Streamlit's container with height
+                with st.container(height=400):
+                    for i, sku in enumerate(metrics['false_positives'], 1):
+                        st.write(f"{i}. **{sku}**")
+                        
+                        # Display SKU image if available
+                        if api_data:
+                            image_url = get_sku_image_url(sku, api_data)
+                            if image_url:
+                                try:
+                                    st.image(
+                                        image_url, 
+                                        caption=f"False Positive: {sku}", 
+                                        width=200
+                                    )
+                                except Exception as e:
+                                    st.error(f"Failed to load image for {sku}: {str(e)}")
+                                    st.text(f"Image URL: {image_url}")
+                            else:
+                                st.info(f"No image available for {sku}")
+                        st.write("---")  # Separator between SKUs
         else:
             st.success("No false positives")
 
@@ -927,7 +977,7 @@ def main():
                 if ground_truth_skus:
                     # Calculate and display accuracy metrics
                     metrics = calculate_accuracy_metrics(ground_truth_skus, predicted_skus)
-                    display_accuracy_metrics(metrics)
+                    display_accuracy_metrics(metrics, st.session_state.osa_data)
                     
                     st.markdown("---")
                 
