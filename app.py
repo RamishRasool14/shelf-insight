@@ -23,11 +23,78 @@ from gemini_client import GeminiProductDetector, create_sample_detection_result
 
 # API Configuration
 OSA_API_URL = "https://tamimi.impulseglobal.net//ExternalServices/IR_API.asmx/getOSAImage"
-DISPLAY_IDS = ['ACH187', 'ACH190', 'ACH186', 'ACH191', 'ACH192', 'ACH189', 'ACH188']
+
+
+def fetch_all_osa_data():
+    """Fetch all OSA data without any filters to get available DisplayIDs and dates"""
+    try:
+        # Fetch data without any Date or DisplayID filters
+        params = {
+            'Date': '',
+            'DisplayID': ''
+        }
+        
+        response = requests.get(OSA_API_URL, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        return data, None
+        
+    except requests.RequestException as e:
+        return None, f"API request failed: {str(e)}"
+    except json.JSONDecodeError as e:
+        return None, f"Failed to parse API response: {str(e)}"
+    except Exception as e:
+        return None, f"Unexpected error: {str(e)}"
+
+
+def get_unique_display_ids(api_data):
+    """Extract unique DisplayIDs from API response data"""
+    if not api_data:
+        return []
+    
+    display_ids = set()
+    for item in api_data:
+        if 'DisplayID' in item and item['DisplayID']:
+            display_ids.add(item['DisplayID'])
+    
+    return sorted(list(display_ids))
+
+
+def get_unique_dates(api_data):
+    """Extract unique dates from API response data"""
+    if not api_data:
+        return []
+    
+    dates = set()
+    for item in api_data:
+        if 'DOEntry' in item and item['DOEntry']:
+            dates.add(item['DOEntry'])
+    
+    # Convert to list and sort (most recent first)
+    sorted_dates = sorted(list(dates), reverse=True)
+    
+    # Format for display
+    formatted_dates = []
+    for date_str in sorted_dates:
+        try:
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            formatted_dates.append({
+                'date': date_str,
+                'display': date_obj.strftime('%Y-%m-%d (%A)')
+            })
+        except ValueError:
+            # If date parsing fails, use as-is
+            formatted_dates.append({
+                'date': date_str,
+                'display': date_str
+            })
+    
+    return formatted_dates
 
 
 def get_last_10_days():
-    """Get list of last 10 days for date selection"""
+    """Get list of last 10 days for date selection (fallback method)"""
     dates = []
     for i in range(10):
         date = datetime.now() - timedelta(days=i)
@@ -842,40 +909,87 @@ def main():
         st.session_state.selected_date = None
     if 'selected_display_id' not in st.session_state:
         st.session_state.selected_display_id = None
+    if 'all_osa_data' not in st.session_state:
+        st.session_state.all_osa_data = None
+    if 'available_display_ids' not in st.session_state:
+        st.session_state.available_display_ids = []
+    if 'available_dates' not in st.session_state:
+        st.session_state.available_dates = []
+    if 'data_loaded' not in st.session_state:
+        st.session_state.data_loaded = False
     
     # Initialize SKU management session state
     initialize_sku_session_state()
     
+    # Load available DisplayIDs and Dates
+    if not st.session_state.data_loaded:
+        st.info("⏳ Loading available dates and display IDs from API...")
+        with st.spinner("Fetching data from API..."):
+            all_data, error = fetch_all_osa_data()
+            if error:
+                st.error(f"❌ Failed to load data: {error}")
+                st.warning("⚠️ Using fallback data...")
+                # Fallback to default values
+                st.session_state.available_dates = get_last_10_days()
+                st.session_state.available_display_ids = ['ACH187', 'ACH190', 'ACH186', 'ACH191', 'ACH192', 'ACH189', 'ACH188']
+            else:
+                st.session_state.all_osa_data = all_data
+                st.session_state.available_display_ids = get_unique_display_ids(all_data)
+                st.session_state.available_dates = get_unique_dates(all_data)
+                st.success(f"✅ Loaded {len(st.session_state.available_display_ids)} display IDs and {len(st.session_state.available_dates)} dates")
+            st.session_state.data_loaded = True
+            st.rerun()
+    
     # OSA Image Analysis Interface
     st.subheader("📅 Select Date and Display ID")
+    
+    # Show data statistics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Available Display IDs", len(st.session_state.available_display_ids))
+    with col2:
+        st.metric("Available Dates", len(st.session_state.available_dates))
+    with col3:
+        if st.button("🔄 Refresh Data"):
+            st.session_state.data_loaded = False
+            st.rerun()
+    
+    st.markdown("---")
     
     # Date and Display ID selection
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        dates = get_last_10_days()
-        date_options = [d['display'] for d in dates]
-        date_values = [d['date'] for d in dates]
-        
-        selected_date_index = st.selectbox(
-            "Select Date:",
-            range(len(date_options)),
-            format_func=lambda x: date_options[x],
-            help="Select a date from the last 10 days"
-        )
-        selected_date = date_values[selected_date_index]
+        if st.session_state.available_dates:
+            date_options = [d['display'] for d in st.session_state.available_dates]
+            date_values = [d['date'] for d in st.session_state.available_dates]
+            
+            selected_date_index = st.selectbox(
+                "Select Date:",
+                range(len(date_options)),
+                format_func=lambda x: date_options[x],
+                help=f"Select from {len(date_options)} available dates"
+            )
+            selected_date = date_values[selected_date_index]
+        else:
+            st.error("No dates available")
+            selected_date = None
     
     with col2:
-        selected_display_id = st.selectbox(
-            "Select Display ID:",
-            DISPLAY_IDS,
-            help="Select a display ID to view images from"
-        )
+        if st.session_state.available_display_ids:
+            selected_display_id = st.selectbox(
+                "Select Display ID:",
+                st.session_state.available_display_ids,
+                help=f"Select from {len(st.session_state.available_display_ids)} available display IDs"
+            )
+        else:
+            st.error("No display IDs available")
+            selected_display_id = None
     
     with col3:
         st.write("")  # Spacer
         st.write("")  # Spacer
-        if st.button("🔍 Fetch Images", type="primary"):
+        if st.button("🔍 Fetch Images", type="primary", disabled=(not selected_date or not selected_display_id)):
             with st.spinner("Fetching images from API..."):
                 data, error = fetch_osa_images(selected_date, selected_display_id)
                 if error:
