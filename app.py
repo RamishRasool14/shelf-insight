@@ -15,11 +15,11 @@ from config import (
     APP_TITLE, 
     APP_DESCRIPTION, 
     COLORS, 
-    DEFAULT_SKU_ITEMS,
     MAX_FILE_SIZE_MB,
     ALLOWED_EXTENSIONS
 )
 from gemini_client import GeminiProductDetector, create_sample_detection_result
+from supabase_client import save_osa_run, fetch_runs
 
 # API Configuration
 OSA_API_URL = "https://tamimi.impulseglobal.net//ExternalServices/IR_API.asmx/getOSAImage"
@@ -157,16 +157,18 @@ def get_ground_truth_skus(api_data):
 
 
 def get_predicted_skus_from_results(detection_results):
-    """Extract predicted SKUs from Gemini detection results"""
-    if not detection_results or 'detected_items' not in detection_results:
+    """Extract predicted SKUs supporting minimal and legacy formats"""
+    if not detection_results:
         return []
-    
-    predicted_skus = set()
-    for item in detection_results['detected_items']:
-        if 'item_name' in item and item['item_name']:
-            predicted_skus.add(item['item_name'])
-    
-    return sorted(list(predicted_skus))
+    # Prefer new minimal shape {"sku_names": [...]}
+    sku_names = detection_results.get('sku_names')
+    if isinstance(sku_names, list):
+        return sorted(list({str(s).strip() for s in sku_names if isinstance(s, (str, int, float)) and str(s).strip()}))
+    # Fallback to legacy shape {"detected_items": [{"item_name": ...}]}
+    detected_items = detection_results.get('detected_items')
+    if isinstance(detected_items, list):
+        return sorted(list({str(it.get('item_name')).strip() for it in detected_items if isinstance(it, dict) and it.get('item_name')}))
+    return []
 
 
 def get_sku_image_url(sku_name, api_data):
@@ -175,8 +177,11 @@ def get_sku_image_url(sku_name, api_data):
         return None
     
     for item in api_data:
-        if item.get('SKU') == sku_name and item.get('SKUImage'):
-            return item['SKUImage']
+        if item.get('SKU') == sku_name:
+            if item.get('SKUImage'):
+                return item['SKUImage']
+            if item.get('SKUimage'):
+                return item['SKUimage']
     
     return None
 
@@ -534,300 +539,6 @@ def create_download_button(data, filename):
     )
 
 
-def initialize_sku_session_state():
-    """Initialize session state for SKU management"""
-    if 'custom_sku_items' not in st.session_state:
-        st.session_state.custom_sku_items = DEFAULT_SKU_ITEMS.copy()
-    if 'sku_edit_mode' not in st.session_state:
-        st.session_state.sku_edit_mode = False
-    if 'sku_edit_index' not in st.session_state:
-        st.session_state.sku_edit_index = None
-
-
-def add_sku_item(new_item):
-    """Add a new SKU item to the list"""
-    if new_item.strip() and new_item.strip() not in st.session_state.custom_sku_items:
-        st.session_state.custom_sku_items.append(new_item.strip())
-        return True
-    return False
-
-
-def edit_sku_item(index, updated_item):
-    """Edit an existing SKU item"""
-    if 0 <= index < len(st.session_state.custom_sku_items) and updated_item.strip():
-        st.session_state.custom_sku_items[index] = updated_item.strip()
-        return True
-    return False
-
-
-def delete_sku_item(index):
-    """Delete a SKU item from the list"""
-    if 0 <= index < len(st.session_state.custom_sku_items):
-        del st.session_state.custom_sku_items[index]
-        return True
-    return False
-
-
-def export_sku_list():
-    """Export SKU list as JSON"""
-    sku_data = {
-        "sku_items": st.session_state.custom_sku_items,
-        "total_items": len(st.session_state.custom_sku_items),
-        "export_timestamp": datetime.now().isoformat()
-    }
-    return json.dumps(sku_data, indent=2)
-
-
-def import_sku_list(uploaded_file):
-    """Import SKU list from JSON file"""
-    try:
-        sku_data = json.load(uploaded_file)
-        if "sku_items" in sku_data and isinstance(sku_data["sku_items"], list):
-            st.session_state.custom_sku_items = sku_data["sku_items"]
-            return True, f"Successfully imported {len(sku_data['sku_items'])} SKU items"
-        else:
-            return False, "Invalid JSON format. Expected 'sku_items' key with list of items."
-    except json.JSONDecodeError:
-        return False, "Invalid JSON file format."
-    except Exception as e:
-        return False, f"Error importing file: {str(e)}"
-
-
-def render_sku_management():
-    """Render the SKU management interface"""
-    st.subheader("📦 SKU Items Management")
-    
-    # Tab selection
-    tab1, tab2, tab3 = st.tabs(["📋 View & Edit", "➕ Add Items", "📁 Import/Export"])
-    
-    with tab1:
-        st.write("**Current SKU Items:**")
-        
-        if not st.session_state.custom_sku_items:
-            st.info("No SKU items configured. Add some items to get started!")
-        else:
-            # Search functionality
-            search_term = st.text_input("🔍 Search SKU items:", placeholder="Type to filter items...")
-            
-            # Filter items based on search
-            filtered_items = []
-            for i, item in enumerate(st.session_state.custom_sku_items):
-                if not search_term or search_term.lower() in item.lower():
-                    filtered_items.append((i, item))
-            
-            st.write(f"Showing {len(filtered_items)} of {len(st.session_state.custom_sku_items)} items")
-            
-            # Display items with edit/delete options
-            for original_index, item in filtered_items:
-                col1, col2, col3, col4 = st.columns([6, 1, 1, 1])
-                
-                with col1:
-                    if st.session_state.sku_edit_mode and st.session_state.sku_edit_index == original_index:
-                        # Edit mode
-                        edited_item = st.text_input(
-                            f"Edit item {original_index + 1}:",
-                            value=item,
-                            key=f"edit_item_{original_index}",
-                            label_visibility="collapsed"
-                        )
-                    else:
-                        # Display mode
-                        st.write(f"{original_index + 1}. {item}")
-                
-                with col2:
-                    if st.session_state.sku_edit_mode and st.session_state.sku_edit_index == original_index:
-                        # Save button
-                        if st.button("💾", key=f"save_{original_index}", help="Save changes"):
-                            edited_item = st.session_state[f"edit_item_{original_index}"]
-                            if edit_sku_item(original_index, edited_item):
-                                st.session_state.sku_edit_mode = False
-                                st.session_state.sku_edit_index = None
-                                st.success("Item updated!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to update item!")
-                    else:
-                        # Edit button
-                        if st.button("✏️", key=f"edit_{original_index}", help="Edit item"):
-                            st.session_state.sku_edit_mode = True
-                            st.session_state.sku_edit_index = original_index
-                            st.rerun()
-                
-                with col3:
-                    if st.session_state.sku_edit_mode and st.session_state.sku_edit_index == original_index:
-                        # Cancel button
-                        if st.button("❌", key=f"cancel_{original_index}", help="Cancel editing"):
-                            st.session_state.sku_edit_mode = False
-                            st.session_state.sku_edit_index = None
-                            st.rerun()
-                    else:
-                        # Delete button
-                        if st.button("🗑️", key=f"delete_{original_index}", help="Delete item"):
-                            if delete_sku_item(original_index):
-                                st.success("Item deleted!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to delete item!")
-            
-            # Bulk operations
-            st.write("**Bulk Operations:**")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("🔄 Reset to Default", help="Reset to default SKU items"):
-                    st.session_state.custom_sku_items = DEFAULT_SKU_ITEMS.copy()
-                    st.session_state.sku_edit_mode = False
-                    st.session_state.sku_edit_index = None
-                    st.success("Reset to default SKU items!")
-                    st.rerun()
-            
-            with col2:
-                if st.button("🗑️ Clear All", help="Remove all SKU items"):
-                    st.session_state.custom_sku_items = []
-                    st.session_state.sku_edit_mode = False
-                    st.session_state.sku_edit_index = None
-                    st.success("All items cleared!")
-                    st.rerun()
-            
-            with col3:
-                if st.button("🔀 Sort A-Z", help="Sort items alphabetically"):
-                    st.session_state.custom_sku_items.sort()
-                    st.success("Items sorted alphabetically!")
-                    st.rerun()
-    
-    with tab2:
-        st.write("**Add New SKU Items:**")
-        
-        # Single item addition
-        new_item = st.text_input("Enter new SKU item:", placeholder="Type SKU item name...")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("➕ Add Item", type="primary", use_container_width=True):
-                if add_sku_item(new_item):
-                    st.success(f"Added: {new_item}")
-                    st.rerun()
-                elif not new_item.strip():
-                    st.error("Please enter a valid SKU item!")
-                else:
-                    st.error("Item already exists!")
-        
-        with col2:
-            if st.button("➕ Add & Clear", use_container_width=True):
-                if add_sku_item(new_item):
-                    st.success(f"Added: {new_item}")
-                    # Clear the input by rerunning
-                    st.rerun()
-                elif not new_item.strip():
-                    st.error("Please enter a valid SKU item!")
-                else:
-                    st.error("Item already exists!")
-        
-        st.divider()
-        
-        # Bulk addition
-        st.write("**Bulk Add Items:**")
-        bulk_items = st.text_area(
-            "Enter multiple SKU items (one per line):",
-            height=150,
-            placeholder="Item 1\nItem 2\nItem 3\n..."
-        )
-        
-        if st.button("➕ Add All Items", type="primary"):
-            if bulk_items.strip():
-                items_to_add = [item.strip() for item in bulk_items.split('\n') if item.strip()]
-                added_count = 0
-                duplicate_count = 0
-                
-                for item in items_to_add:
-                    if add_sku_item(item):
-                        added_count += 1
-                    else:
-                        duplicate_count += 1
-                
-                if added_count > 0:
-                    st.success(f"Added {added_count} new items!")
-                if duplicate_count > 0:
-                    st.warning(f"{duplicate_count} items were duplicates and skipped.")
-                
-                if added_count > 0:
-                    st.rerun()
-            else:
-                st.error("Please enter at least one item!")
-    
-    with tab3:
-        st.write("**Export SKU List:**")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total SKU Items", len(st.session_state.custom_sku_items))
-        with col2:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"sku_items_{timestamp}.json"
-            st.download_button(
-                label="📥 Download SKU List",
-                data=export_sku_list(),
-                file_name=filename,
-                mime="application/json",
-                use_container_width=True
-            )
-        
-        st.divider()
-        
-        st.write("**Import SKU List:**")
-        uploaded_sku_file = st.file_uploader(
-            "Choose a JSON file with SKU items:",
-            type=['json'],
-            help="Upload a JSON file containing SKU items"
-        )
-        
-        if uploaded_sku_file is not None:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("📁 Replace Current List", type="primary"):
-                    success, message = import_sku_list(uploaded_sku_file)
-                    if success:
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(message)
-            
-            with col2:
-                if st.button("📁 Merge with Current List"):
-                    # Save current list
-                    current_items = st.session_state.custom_sku_items.copy()
-                    
-                    success, message = import_sku_list(uploaded_sku_file)
-                    if success:
-                        # Merge with existing items (avoid duplicates)
-                        imported_items = st.session_state.custom_sku_items.copy()
-                        st.session_state.custom_sku_items = current_items
-                        
-                        added_count = 0
-                        for item in imported_items:
-                            if add_sku_item(item):
-                                added_count += 1
-                        
-                        st.success(f"Merged {added_count} new items with existing list!")
-                        st.rerun()
-                    else:
-                        st.error(message)
-        
-        # Show sample JSON format
-        with st.expander("📋 View Sample JSON Format"):
-            sample_json = {
-                "sku_items": [
-                    "Sample Item 1",
-                    "Sample Item 2", 
-                    "Sample Item 3"
-                ],
-                "total_items": 3,
-                "export_timestamp": "2024-01-01T12:00:00"
-            }
-            st.code(json.dumps(sample_json, indent=2), language="json")
-
-
 def display_detection_results(results):
     """Display detection results in a formatted way"""
     if "error" in results:
@@ -885,7 +596,7 @@ def display_detection_results(results):
                 with col2:
                     st.write(f"**Notes:** {item.get('notes', 'No additional notes')}")
     else:
-        st.info("No items detected in the image. Try adjusting your SKU list or upload a different image.")
+        st.info("No items detected in the image.")
 
 
 def main():
@@ -917,31 +628,166 @@ def main():
         st.session_state.available_dates = []
     if 'data_loaded' not in st.session_state:
         st.session_state.data_loaded = False
+    if 'history_runs' not in st.session_state:
+        st.session_state.history_runs = []
+    if 'history_index' not in st.session_state:
+        st.session_state.history_index = 0
+    if 'history_loaded_for' not in st.session_state:
+        st.session_state.history_loaded_for = None
+    if 'last_analyzed_image_url' not in st.session_state:
+        st.session_state.last_analyzed_image_url = None
+    if 'last_save_signature' not in st.session_state:
+        st.session_state.last_save_signature = None
+    if 'app_mode' not in st.session_state:
+        st.session_state.app_mode = "Perform Analysis"
+
+    # Mode selection
+    st.markdown("---")
+    st.subheader("Mode")
+    st.session_state.app_mode = st.radio(
+        "Choose what you want to do:",
+        ["Perform Analysis", "View History"],
+        horizontal=True,
+    )
     
-    # Initialize SKU management session state
-    initialize_sku_session_state()
     
-    # Load available DisplayIDs and Dates
-    if not st.session_state.data_loaded:
-        st.info("⏳ Loading available dates and display IDs from API...")
-        with st.spinner("Fetching data from API..."):
-            all_data, error = fetch_all_osa_data()
-            if error:
-                st.error(f"❌ Failed to load data: {error}")
-                st.warning("⚠️ Using fallback data...")
-                # Fallback to default values
-                st.session_state.available_dates = get_last_10_days()
-                st.session_state.available_display_ids = ['ACH187', 'ACH190', 'ACH186', 'ACH191', 'ACH192', 'ACH189', 'ACH188']
+    # Load available DisplayIDs and Dates only for analysis mode
+    if st.session_state.app_mode == "Perform Analysis":
+        if not st.session_state.data_loaded:
+            st.info("⏳ Loading available dates and display IDs from API...")
+            with st.spinner("Fetching data from API..."):
+                all_data, error = fetch_all_osa_data()
+                if error:
+                    st.error(f"❌ Failed to load data: {error}")
+                    st.warning("⚠️ Using fallback data...")
+                    # Fallback to default values
+                    st.session_state.available_dates = get_last_10_days()
+                    st.session_state.available_display_ids = ['ACH187', 'ACH190', 'ACH186', 'ACH191', 'ACH192', 'ACH189', 'ACH188']
+                else:
+                    st.session_state.all_osa_data = all_data
+                    st.session_state.available_display_ids = get_unique_display_ids(all_data)
+                    st.session_state.available_dates = get_unique_dates(all_data)
+                    st.success(f"✅ Loaded {len(st.session_state.available_display_ids)} display IDs and {len(st.session_state.available_dates)} dates")
+                st.session_state.data_loaded = True
+                st.rerun()
+    
+    # If in History mode, render history dashboard and return
+    if st.session_state.app_mode == "View History":
+        st.subheader("🕘 Analysis History Dashboard")
+        st.markdown("Use filters to narrow results, or view all recent runs.")
+
+        filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 1])
+
+        with filter_col1:
+            date_filter = st.text_input("Filter by Date (YYYY-MM-DD)", value="")
+        with filter_col2:
+            display_filter = st.text_input("Filter by Display ID", value="")
+        with filter_col3:
+            if st.button("📥 Load History", use_container_width=True):
+                runs, err = fetch_runs(
+                    date_str=(date_filter or None),
+                    display_id=(display_filter or None),
+                    limit=200,
+                )
+                if err:
+                    st.error(f"Failed to load history: {err}")
+                else:
+                    st.session_state.history_runs = runs
+                    st.session_state.history_index = 0
+                    st.session_state.history_loaded_for = (date_filter or None, display_filter or None)
+
+        # Auto-load if nothing loaded yet
+        if not st.session_state.history_runs:
+            runs, _ = fetch_runs(limit=100)
+            st.session_state.history_runs = runs
+            st.session_state.history_index = 0
+            st.session_state.history_loaded_for = (None, None)
+
+        runs = st.session_state.history_runs or []
+        if runs:
+            # Build a dataframe-like list
+            table_rows = []
+            for r in runs:
+                gt = r.get("ground_truth_skus") or []
+                pred = r.get("predicted_skus") or []
+                if not pred and isinstance(r.get("raw_detection"), dict):
+                    pred = get_predicted_skus_from_results(r.get("raw_detection") or {})
+                metrics_obj = r.get("metrics") or {}
+                if isinstance(metrics_obj, dict) and isinstance(metrics_obj.get("false_positives"), list):
+                    fp_count = len(metrics_obj.get("false_positives") or [])
+                else:
+                    fp_count = len(list(set(pred) - set(gt)))
+                img_url = r.get("image_url") or ""
+
+                table_rows.append({
+                    "Date": r.get("date"),
+                    "Display ID": r.get("display_id"),
+                    "Accuracy": r.get("accuracy"),
+                    "Ground Truth (OSA=1)": len(gt),
+                    "Predicted SKUs": len(pred),
+                    "False Positives": fp_count,
+                    "Image URL": img_url,
+                    "Created At": r.get("created_at"),
+                })
+            df = pd.DataFrame(table_rows)
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Image URL": st.column_config.LinkColumn(
+                        "Image URL",
+                        help="Open the saved display image in a new tab",
+                        display_text="Open Image",
+                    )
+                },
+            )
+
+            st.markdown("---")
+            st.subheader("Details")
+            nav_cols = st.columns([1, 1, 3])
+            with nav_cols[0]:
+                prev_disabled = st.session_state.history_index >= len(runs) - 1
+                if st.button("⬅️ Previous", disabled=prev_disabled, use_container_width=True):
+                    st.session_state.history_index = min(st.session_state.history_index + 1, len(runs) - 1)
+            with nav_cols[1]:
+                next_disabled = st.session_state.history_index <= 0
+                if st.button("Next ➡️", disabled=next_disabled, use_container_width=True):
+                    st.session_state.history_index = max(st.session_state.history_index - 1, 0)
+
+            idx = st.session_state.history_index
+            cur = runs[idx]
+            st.info(f"Showing run {len(runs) - idx} of {len(runs)} (newest first) • {cur.get('created_at','')}")
+
+            run_ground = cur.get("ground_truth_skus") or []
+            run_pred = cur.get("predicted_skus") or []
+            if not run_pred and isinstance(cur.get("raw_detection"), dict):
+                run_pred = get_predicted_skus_from_results(cur.get("raw_detection") or {})
+            run_metrics = cur.get("metrics") or calculate_accuracy_metrics(run_ground, run_pred)
+
+            display_accuracy_metrics(run_metrics, st.session_state.osa_data)
+
+            st.subheader("🔍 AI Predictions (from history)")
+            if run_pred:
+                st.write(f"**Detected {len(run_pred)} SKUs:**")
+                for i, sku in enumerate(run_pred, 1):
+                    if sku in run_ground:
+                        st.success(f"✅ {i}. {sku}")
+                    else:
+                        st.error(f"❌ {i}. {sku}")
             else:
-                st.session_state.all_osa_data = all_data
-                st.session_state.available_display_ids = get_unique_display_ids(all_data)
-                st.session_state.available_dates = get_unique_dates(all_data)
-                st.success(f"✅ Loaded {len(st.session_state.available_display_ids)} display IDs and {len(st.session_state.available_dates)} dates")
-            st.session_state.data_loaded = True
-            st.rerun()
-    
-    # OSA Image Analysis Interface
-    st.subheader("📅 Select Date and Display ID")
+                st.info("No SKUs detected in this historical run")
+
+            raw_det = cur.get("raw_detection") or {}
+            if raw_det:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"osa_analysis_history_{cur.get('date','')}_{cur.get('display_id','')}_{timestamp}.json"
+                create_download_button(raw_det, filename)
+        else:
+            st.info("No history runs found.")
+
+        # Stop further rendering when in history mode
+        return
     
     # Show data statistics
     col1, col2, col3 = st.columns(3)
@@ -1045,7 +891,7 @@ def main():
         
         with right_col:
             st.subheader("🤖 AI Prediction Analysis")
-            st.info("ℹ️ AI analysis uses only Ground Truth SKUs (OSA=1) for detection")
+            st.info("ℹ️ AI analysis uses only Ground Truth SKUs (OSA=1) for detection. ShelfNo and FacingTouching are provided as guidance to improve recognition.")
             
             # Analysis button
             if st.button("🔍 Analyze Display Images", type="primary", use_container_width=True):
@@ -1055,24 +901,53 @@ def main():
                             # Use the first display image for analysis
                             image_groups = {}
                             for item in st.session_state.osa_data:
-                                after_image = item.get('AfterImagePath', '')
+                                after_image = item.get('AfterImagePath') or item.get('AfterImagePath'.lower()) or ''
                                 if after_image and after_image not in image_groups:
-                                    image_groups[after_image] = True
-                                    break
+                                    image_groups[after_image] = []
+                                if after_image:
+                                    image_groups[after_image].append(item)
                             
                             if image_groups:
-                                # Get the first image URL
+                                # Get the first image URL and its items
                                 first_image_url = list(image_groups.keys())[0]
+                                first_image_items = image_groups[first_image_url]
                                 
                                 # Download and convert image for analysis
                                 response = requests.get(first_image_url)
                                 response.raise_for_status()
                                 image = Image.open(BytesIO(response.content))
                                 
-                                # Use only ground truth SKUs (OSA=1) for detection
+                                # Build rich ground truth items for this image only (OSA=1).
+                                # Preserve duplicates across shelves/placements.
+                                rich_items = []
+                                gt_set = set(ground_truth_skus)
+                                for it in first_image_items:
+                                    sku_name = it.get('SKU')
+                                    if sku_name in gt_set:
+                                        rich_items.append({
+                                            'SKU': sku_name,
+                                            'ShelfNo': it.get('ShelfNo') or it.get('shelfno') or it.get('shelfNo'),
+                                            'FacingTouching': it.get('FacingTouching') or it.get('facingtouching') or it.get('Facing') or it.get('facing')
+                                        })
+
+                                # Fallback 1: if no rich items for the selected image, use all OSA=1 items across the display (preserve duplicates)
+                                if not rich_items:
+                                    for it in st.session_state.osa_data:
+                                        sku_name = it.get('SKU')
+                                        if sku_name in gt_set:
+                                            rich_items.append({
+                                                'SKU': sku_name,
+                                                'ShelfNo': it.get('ShelfNo') or it.get('shelfno') or it.get('shelfNo'),
+                                                'FacingTouching': it.get('FacingTouching') or it.get('facingtouching') or it.get('Facing') or it.get('facing')
+                                            })
+
+                                # Fallback 2: if still empty, send name-only duplicates (preserve occurrences)
+                                to_detect = rich_items if rich_items else [it.get('SKU') for it in st.session_state.osa_data if it.get('SKU') in gt_set]
+
                                 detector = GeminiProductDetector()
-                                results = detector.detect_products(image, ground_truth_skus)
+                                results = detector.detect_products(image, to_detect)
                                 st.session_state.detection_results = results
+                                st.session_state.last_analyzed_image_url = first_image_url
                                 st.success("✅ Analysis complete!")
                             else:
                                 st.error("No display images found to analyze")
@@ -1092,6 +967,33 @@ def main():
                     # Calculate and display accuracy metrics
                     metrics = calculate_accuracy_metrics(ground_truth_skus, predicted_skus)
                     display_accuracy_metrics(metrics, st.session_state.osa_data)
+                    # Persist run to Supabase (guard against rerun duplicates)
+                    try:
+                        import hashlib
+                        sig_obj = {
+                            "date": st.session_state.selected_date,
+                            "display": st.session_state.selected_display_id,
+                            "results": st.session_state.detection_results,
+                        }
+                        sig_str = json.dumps(sig_obj, sort_keys=True, default=str)
+                        signature = hashlib.sha256(sig_str.encode("utf-8")).hexdigest()
+                        if st.session_state.last_save_signature != signature:
+                            ok, err = save_osa_run(
+                                date_str=st.session_state.selected_date or "",
+                                display_id=st.session_state.selected_display_id or "",
+                                ground_truth_skus=ground_truth_skus,
+                                predicted_skus=predicted_skus,
+                                accuracy_metrics=metrics,
+                                raw_detection=st.session_state.detection_results,
+                                image_url=st.session_state.last_analyzed_image_url,
+                            )
+                            if ok:
+                                st.session_state.last_save_signature = signature
+                                st.caption("💾 Saved analysis to history")
+                            else:
+                                st.caption(f"⚠️ Could not save to history: {err}")
+                    except Exception as e:
+                        st.caption(f"⚠️ History save error: {str(e)}")
                     
                     st.markdown("---")
                 
@@ -1110,11 +1012,13 @@ def main():
                 else:
                     st.info("No SKUs detected in the image")
                 
-                # Download button
-                if st.session_state.detection_results.get("detected_items"):
+                # Download button supports both minimal and legacy shapes
+                if st.session_state.detection_results.get("sku_names") or st.session_state.detection_results.get("detected_items"):
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"osa_analysis_{st.session_state.selected_date}_{st.session_state.selected_display_id}_{timestamp}.json"
                     create_download_button(st.session_state.detection_results, filename)
+
+                # History viewer moved to dedicated View History mode
     
     # Footer
     st.markdown("---")

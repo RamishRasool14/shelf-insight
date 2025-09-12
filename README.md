@@ -29,6 +29,12 @@ A web-based application that analyzes retail display images from OSA API and cal
 - **JSON Export**: Download detection results with accuracy data
 - **Responsive Design**: Google Material Design inspired interface
 
+### New: Analysis History (Supabase)
+- **Automatic Persistence**: Each analysis run is saved to Supabase
+- **History Viewer**: Load history per Date + Display ID
+- **Previous/Next Navigation**: Browse historical runs (newest first)
+- **Download Historical JSON**: Export raw detection from any run
+
 ## 🛠️ Technology Stack
 
 - **Backend**: Python with Google Gen AI SDK (google-genai v1.22.0)
@@ -62,6 +68,8 @@ A web-based application that analyzes retail display images from OSA API and cal
    
    # Edit .env and add your Google API key
    GOOGLE_API_KEY=your_actual_api_key_here
+   SUPABASE_URL=https://<your-project>.supabase.co
+   SUPABASE_ANON_KEY=your_anon_key
    ```
 
 4. **Get Google API Key**:
@@ -105,12 +113,19 @@ A web-based application that analyzes retail display images from OSA API and cal
    - Download detection results with accuracy metrics as JSON
    - Use data for model performance analysis and improvement
 
+8. **History**:
+   - After running an analysis, scroll to "Analysis History"
+   - Click "Load History" to fetch past runs by selected Date + Display ID
+   - Use "Previous"/"Next" to navigate between runs (newest first)
+   - Download the raw detection JSON of any historical run
+
 ## 📁 Project Structure
 
 ```
 mvp/
 ├── app.py                 # Main Streamlit application
 ├── gemini_client.py       # Google Gemini API integration
+├── supabase_client.py     # Supabase helpers for saving/fetching runs
 ├── config.py             # Configuration settings and constants
 ├── requirements.txt      # Python dependencies
 ├── .env.example         # Environment variables template
@@ -205,6 +220,7 @@ Use demo mode to test the interface without API calls:
 - File uploads are validated for type and size
 - No persistent storage of uploaded images
 - Secure API communication with Google services
+- Supabase anon key is used client-side; restrict RLS policies appropriately
 
 ## 🤝 Contributing
 
@@ -234,3 +250,41 @@ For issues and questions:
 - Custom model training options
 - Real-time detection via camera feed
 - Multi-language support
+
+## 📚 Supabase Setup
+
+Create a table `osa_analysis_runs` with the following schema (Postgres):
+
+```sql
+create table public.osa_analysis_runs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  date text not null,
+  display_id text not null,
+  ground_truth_skus jsonb not null,
+  predicted_skus jsonb not null,
+  accuracy numeric,
+  metrics jsonb not null,
+  raw_detection jsonb not null,
+  image_url text
+);
+
+-- Helpful index for lookups by date+display
+create index on public.osa_analysis_runs (date, display_id, created_at desc);
+
+-- Basic RLS (adjust to your needs)
+alter table public.osa_analysis_runs enable row level security;
+create policy "read all" on public.osa_analysis_runs for select using (true);
+create policy "insert all" on public.osa_analysis_runs for insert with check (true);
+```
+
+Environment variables required:
+
+```bash
+SUPABASE_URL=https://<your-project>.supabase.co
+SUPABASE_ANON_KEY=your_anon_key
+```
+
+The app uses these helpers in `supabase_client.py`:
+- `save_osa_run(...)` to insert a new run
+- `fetch_runs(date_str=..., display_id=..., limit=50)` to load history
